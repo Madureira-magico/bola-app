@@ -608,9 +608,8 @@ html.sa .stage{height:var(--appH,100dvh)}
     sens.y=Math.sin(b*Math.PI/180);
   }
 
-  /* Chacoalhada: movimento rápido para cima e para baixo, em qualquer inclinação.
-     Mede só a aceleração na direção da gravidade, então vale com o telefone
-     reto ou inclinado. */
+  /* Chacoalhada: movimento rápido para cima e para baixo da tela,
+     com o telefone em pé ou inclinado. Chacoalho de lado não abre. */
   var shake={sign:0,count:0,t:0,lx:0,ly:0,lz:0,init:false};
   function onShake(){
     if(!ball.on||ball.open){return;}
@@ -624,8 +623,12 @@ html.sa .stage{height:var(--appH,100dvh)}
     shake.lx+=(g.x-shake.lx)*0.08;
     shake.ly+=(g.y-shake.ly)*0.08;
     shake.lz+=(g.z-shake.lz)*0.08;
-    var gm=Math.sqrt(shake.lx*shake.lx+shake.ly*shake.ly+shake.lz*shake.lz)||1;
-    var v=((g.x-shake.lx)*shake.lx+(g.y-shake.ly)*shake.ly+(g.z-shake.lz)*shake.lz)/gm;
+    /* Só o sobe e desce da tela (ícones indo para o teto e para o chão).
+       O movimento de lado (direita/esquerda) fica de fora. */
+    var dx=g.x-shake.lx,dy=g.y-shake.ly,dz=g.z-shake.lz;
+    var gm=Math.sqrt(shake.ly*shake.ly+shake.lz*shake.lz)||1;
+    var v=(dy*shake.ly+dz*shake.lz)/gm;
+    if(Math.abs(dx)>Math.abs(v)*0.8){v=0;}
     var th=4-(shakeSens-1)*(2.5/9); /* 1 = médio (antigo 10) ... 10 = muito leve */
     var now=performance.now();
     if(Math.abs(v)>th){
