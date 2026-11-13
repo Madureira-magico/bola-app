@@ -1,0 +1,113 @@
+name: Montar app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: montar-app
+  cancel-in-progress: true
+
+jobs:
+  montar:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar o projeto
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Instalar certificado e perfil
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
+        run: |
+          KC="$RUNNER_TEMP/assinatura.keychain-db"
+          KP="$(uuidgen)"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KP" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          echo "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/perfil.mobileprovision"
+          UUID=$(security cms -D -i "$RUNNER_TEMP/perfil.mobileprovision" | plutil -extract UUID raw -)
+          for d in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$d"; cp "$RUNNER_TEMP/perfil.mobileprovision" "$d/$UUID.mobileprovision"
+          done
+
+      - name: Montar o app
+        run: |
+          xcodebuild -project BolaDeEspuma.xcodeproj -scheme BolaDeEspuma \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} archive
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist -exportPath "$RUNNER_TEMP/export"
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Página de instalação
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          BASE="https://$OWNER.github.io/${{ github.event.repository.name }}"
+          mkdir -p site
+          cp "$RUNNER_TEMP"/export/*.ipa site/BolaDeEspuma.ipa
+          cp BolaApp/www/apple-touch-icon.png site/icone.png
+          cat > site/manifest.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>items</key><array><dict>
+          <key>assets</key><array>
+          <dict><key>kind</key><string>software-package</string><key>url</key><string>$BASE/BolaDeEspuma.ipa</string></dict>
+          <dict><key>kind</key><string>display-image</string><key>url</key><string>$BASE/icone.png</string></dict>
+          <dict><key>kind</key><string>full-size-image</string><key>url</key><string>$BASE/icone.png</string></dict>
+          </array>
+          <key>metadata</key><dict>
+          <key>bundle-identifier</key><string>br.com.ricardomadureira.boladeespuma</string>
+          <key>bundle-version</key><string>1.0</string>
+          <key>kind</key><string>software</string>
+          <key>title</key><string>Bola de Espuma</string>
+          </dict></dict></array></dict></plist>
+          PLIST
+          sed -i '' 's/^          //' site/manifest.plist
+          cat > site/index.html <<HTML
+          <!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>Instalar Bola de Espuma</title>
+          <style>body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;text-align:center;padding:40px 20px}
+          img{width:110px;border-radius:24px}a{display:inline-block;margin-top:24px;padding:16px 28px;background:#ffb347;color:#1a1205;border-radius:14px;font-weight:700;text-decoration:none;font-size:18px}
+          p{color:#aaa;font-size:14px}</style></head><body>
+          <img src="icone.png" alt=""><h1>Bola de Espuma</h1><p>Montagem n.º ${{ github.run_number }}</p>
+          <a href="itms-services://?action=download-manifest&url=$BASE/manifest.plist">Instalar no iPhone</a>
+          <p>Abra esta página no Safari do iPhone.</p></body></html>
+          HTML
+          sed -i '' 's/^          //' site/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BolaDeEspuma-ipa
+          path: site/BolaDeEspuma.ipa
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publicar:
+    needs: montar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
